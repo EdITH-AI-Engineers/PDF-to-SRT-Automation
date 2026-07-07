@@ -1,2 +1,5 @@
-mistralai>=1.9.0
+﻿mistralai>=1.9.0
 pydantic>=2.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9

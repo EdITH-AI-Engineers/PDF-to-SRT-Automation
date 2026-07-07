@@ -103,3 +103,33 @@ python .\slides_pdf_to_txt.py --format-model mistral-small-2603 --slide-max-toke
 
 
 
+
+## Run The Local FastAPI App
+
+Install the dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Start the local API on port `8000`:
+
+```powershell
+python .\run_api.py
+```
+
+Open this URL:
+
+```text
+http://127.0.0.1:8000
+```
+
+Useful API endpoints:
+
+```text
+GET  /health
+POST /process
+POST /process-existing
+GET  /outputs
+GET  /download/{filename}
+```
