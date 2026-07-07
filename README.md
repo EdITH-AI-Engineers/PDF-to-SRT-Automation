@@ -129,7 +129,34 @@ Useful API endpoints:
 ```text
 GET  /health
 POST /process
+POST /process/{course_code}
 POST /process-existing
+POST /process-existing/{course_code}
 GET  /outputs
+GET  /outputs/{course_code}
 GET  /download/{filename}
+GET  /download/{course_code}/{filename}
 ```
+
+For course batches, put PDFs in a course folder:
+
+```text
+input\CS101\Module1.pdf
+input\CS101\Module2.pdf
+```
+
+Then call:
+
+```text
+POST /process-existing/CS101
+```
+
+The API writes the batch to:
+
+```text
+output\CS101\Module1.txt
+output\CS101\Module2.txt
+```
+
+The upload endpoint also accepts a course code, either as the URL path
+`POST /process/CS101` or as the `course_code` form field on `POST /process`.
