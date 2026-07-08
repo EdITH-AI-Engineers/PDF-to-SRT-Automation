@@ -160,3 +160,50 @@ output\CS101\Module2.txt
 
 The upload endpoint also accepts a course code, either as the URL path
 `POST /process/CS101` or as the `course_code` form field on `POST /process`.
+
+## Run The Windows Executable
+
+The built executable is:
+
+```text
+dist\PDFSlideExtractionAPI.exe
+```
+
+When running the executable, keep the runtime files beside it:
+
+```text
+dist\.env
+dist\input
+dist\output
+```
+
+Create the exe `.env` file with:
+
+```powershell
+Copy-Item .env.example .\dist\.env
+```
+
+Then add your real `MISTRAL_API_KEY` to `dist\.env`.
+
+Start the API with:
+
+```powershell
+.\dist\PDFSlideExtractionAPI.exe
+```
+
+Open:
+
+```text
+http://127.0.0.1:8000
+```
+
+To rebuild the executable after code changes:
+
+```powershell
+python -m pip install pyinstaller
+python -m PyInstaller --noconfirm --clean .\PDFSlideExtractionAPI.spec
+```
+
+If Windows blocks the unsigned executable with an Application Control policy,
+run `python .\run_api.py` during development or sign/allowlist the generated
+`dist\PDFSlideExtractionAPI.exe`.

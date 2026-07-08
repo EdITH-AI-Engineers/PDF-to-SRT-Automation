@@ -3,6 +3,7 @@
 import html
 import os
 import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated
@@ -20,7 +21,13 @@ from slides_pdf_to_txt import (
     unique_output_path,
 )
 
-BASE_DIR = Path(__file__).resolve().parent
+def runtime_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+BASE_DIR = runtime_base_dir()
 INPUT_DIR = BASE_DIR / "input"
 OUTPUT_DIR = BASE_DIR / "output"
 
