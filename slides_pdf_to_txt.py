@@ -28,6 +28,15 @@ UNREADABLE = "[Unreadable Text]"
 NOT_SPECIFIED = "Not Specified"
 
 
+def runtime_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+BASE_DIR = runtime_base_dir()
+
+
 MODULE_SYSTEM_PROMPT = """You extract metadata from the title slide of a PowerPoint PDF.
 
 Use only the supplied OCR text and visible slide data. Do not use the filename.
@@ -598,6 +607,16 @@ def collect_pdfs(args: argparse.Namespace) -> list[Path]:
     return pdfs
 
 
+def collect_pdf_batches(input_dir: Path, output_dir: Path) -> list[tuple[Path, list[Path]]]:
+    batches_by_output: dict[Path, list[Path]] = {}
+    for pdf_path in sorted(input_dir.rglob("*.pdf")):
+        relative_parent = pdf_path.parent.relative_to(input_dir)
+        batch_output_dir = output_dir if str(relative_parent) == "." else output_dir / relative_parent
+        batches_by_output.setdefault(batch_output_dir, []).append(pdf_path)
+
+    return [(batch_output_dir, pdfs) for batch_output_dir, pdfs in batches_by_output.items()]
+
+
 def process_pdf(client: Any, pdf_path: Path, output_path: Path, args: argparse.Namespace) -> None:
     print(f"Processing {pdf_path.name}...", file=sys.stderr)
     file_id = upload_pdf(client, pdf_path, args.attempts)
@@ -657,13 +676,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input-dir",
-        default="input",
-        help="Folder to scan for PDFs when no PDF paths are provided. Default: input.",
+        default=str(BASE_DIR / "input"),
+        help="Folder to scan for PDFs when no PDF paths are provided. Default: input beside the app.",
     )
     parser.add_argument(
         "--output-dir",
-        default="output",
-        help="Folder where .txt files are written. Default: output.",
+        default=str(BASE_DIR / "output"),
+        help="Folder where .txt files are written. Default: output beside the app.",
     )
     parser.add_argument(
         "--ocr-model",
@@ -720,7 +739,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     load_dotenv_file(Path.cwd() / ".env")
-    load_dotenv_file(Path(__file__).resolve().parent / ".env")
+    load_dotenv_file(BASE_DIR / ".env")
 
     args = parse_args()
     if args.attempts < 1:
@@ -740,19 +759,25 @@ def main() -> int:
             "MISTRAL_API_KEY is not set. Add it to your environment or create a .env file."
         )
 
-    pdfs = collect_pdfs(args)
-    if not pdfs:
-        raise RuntimeError("No PDF files found to process.")
-
     output_dir = Path(args.output_dir).expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.pdfs:
+        batches = [(output_dir, collect_pdfs(args))]
+    else:
+        input_dir = Path(args.input_dir).expanduser().resolve()
+        batches = collect_pdf_batches(input_dir, output_dir)
+
+    if not batches:
+        raise RuntimeError("No PDF files found to process.")
 
     Mistral = import_mistral_client()
     client = Mistral(api_key=api_key)
 
-    for index, pdf_path in enumerate(pdfs, start=1):
-        output_path = unique_output_path(output_dir, pdf_path, index, args.overwrite)
-        process_pdf(client, pdf_path, output_path, args)
+    for batch_output_dir, pdfs in batches:
+        batch_output_dir.mkdir(parents=True, exist_ok=True)
+        for index, pdf_path in enumerate(pdfs, start=1):
+            output_path = unique_output_path(batch_output_dir, pdf_path, index, args.overwrite)
+            process_pdf(client, pdf_path, output_path, args)
 
     return 0
 

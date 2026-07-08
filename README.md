@@ -198,11 +198,43 @@ python .\slides_pdf_to_txt.py --format-model mistral-small-2603 --slide-max-toke
 - Adds a strict 2-3 sentence brief explanation after every slide.
 - Deletes uploaded Mistral files after processing unless `--keep-uploads` is used.
 
-## Rebuilding The Executable
+## Run The Windows Executable
 
-To rebuild the executable after code changes:
+The portable extraction package is:
+
+```text
+dist\PDFSlideTextExtractor-Portable
+```
+
+It does not require Python to be installed. Put the runtime files beside the executable:
+
+```text
+dist\PDFSlideTextExtractor-Portable\.env
+dist\PDFSlideTextExtractor-Portable\input
+dist\PDFSlideTextExtractor-Portable\output
+```
+
+Create the exe `.env` file with:
+
+```powershell
+Copy-Item .env.example .\dist\PDFSlideTextExtractor-Portable\.env
+```
+
+Then add your real `MISTRAL_API_KEY` to that `.env` file.
+
+Put PDFs in `input`, then start extraction with:
+
+```powershell
+.\dist\PDFSlideTextExtractor-Portable\start_extraction.bat
+```
+
+The executable scans `input` and writes `.txt` files to `output`. Course folders are mirrored, so `input\CS101\Module1.pdf` becomes `output\CS101\Module1.txt`.
+
+To rebuild the extraction executable after code changes:
 
 ```powershell
 python -m pip install pyinstaller
-python -m PyInstaller --noconfirm --clean .\PDFSlideExtractionAPI.spec
+python -m PyInstaller --noconfirm --clean .\PDFSlideTextExtractor.spec
 ```
+
+If Windows blocks the unsigned executable with an Application Control policy, run `python .\slides_pdf_to_txt.py` during development or sign/allowlist `PDFSlideTextExtractor.exe`.
