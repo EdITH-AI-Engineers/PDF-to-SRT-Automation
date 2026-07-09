@@ -1,7 +1,5 @@
-﻿.env
 input/
 output/
-outputs/
-__pycache__/
-*.pyc
-build/
+.env
+progress.json
+progress.log

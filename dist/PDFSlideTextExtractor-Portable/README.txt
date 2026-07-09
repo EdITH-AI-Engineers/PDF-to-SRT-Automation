@@ -6,8 +6,15 @@ Setup:
 1. Copy .env.example to .env in this same folder.
 2. Open .env and replace the placeholder with your real MISTRAL_API_KEY.
 3. Put PDFs in input, or in course folders such as input\CS101.
-4. Double-click start_extraction.bat, or run PDFSlideTextExtractor.exe directly.
-5. Wait for the extraction to finish.
+4. Run PDFSlideTextExtractor.exe.
+5. Wait for the extraction to finish, then press Enter to close the window.
+
+PDFSlideTextExtractorCore.exe is used internally by PDFSlideTextExtractor.exe.
+Run PDFSlideTextExtractor.exe, not the core file.
+
+Progress is saved while the extractor runs:
+progress.json shows the latest status, current PDF, current slide, and outputs.
+progress.log keeps a timestamped text log of the run.
 
 Course batch example:
 input\CS101\Module1.pdf
