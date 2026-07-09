@@ -28,7 +28,8 @@ progress.json shows the latest status, current PDF, current slide, and outputs.
 progress.log keeps a timestamped text log of the run.
 
 After a PDF is successfully converted, the finished PDF is deleted from input.
-This prevents the same finished PDF from being processed again on the next run.
+On startup, existing PDFs that already have matching .txt files in output are
+also deleted. This prevents finished PDFs from being processed again.
 
 Course batch example:
 input\CS101\Module1.pdf
