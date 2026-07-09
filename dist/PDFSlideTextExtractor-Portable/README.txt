@@ -9,12 +9,26 @@ Setup:
 4. Run PDFSlideTextExtractor.exe.
 5. Wait for the extraction to finish, then press Enter to close the window.
 
+Mistral API key steps:
+1. Go to https://console.mistral.ai/
+2. Sign in or create an account.
+3. Open the API keys area.
+4. Create a new API key.
+5. Copy .env.example and rename the copy to .env.
+6. Open .env and replace your_real_key_here with the key you copied.
+7. Save .env in the same folder as PDFSlideTextExtractor.exe.
+
+Do not share .env because it contains your private API key.
+
 PDFSlideTextExtractorCore.exe is used internally by PDFSlideTextExtractor.exe.
 Run PDFSlideTextExtractor.exe, not the core file.
 
 Progress is saved while the extractor runs:
 progress.json shows the latest status, current PDF, current slide, and outputs.
 progress.log keeps a timestamped text log of the run.
+
+After a PDF is successfully converted, the finished PDF is deleted from input.
+This prevents the same finished PDF from being processed again on the next run.
 
 Course batch example:
 input\CS101\Module1.pdf
