@@ -27,6 +27,9 @@ Progress is saved while the extractor runs:
 progress.json shows the latest status, current PDF, current slide, and outputs.
 progress.log keeps a timestamped text log of the run.
 
+If Mistral returns a Markdown table, the extractor converts it to plain text
+rows instead of stopping the run.
+
 After a PDF is successfully converted, the finished PDF is deleted from input.
 On startup, existing PDFs that already have matching .txt files in output are
 also deleted. This prevents finished PDFs from being processed again.
