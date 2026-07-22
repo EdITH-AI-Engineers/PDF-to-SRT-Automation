@@ -20,8 +20,8 @@ Mistral API key steps:
 
 Do not share .env because it contains your private API key.
 
-PDFSlideTextExtractorCore.exe is used internally by PDFSlideTextExtractor.exe.
-Run PDFSlideTextExtractor.exe, not the core file.
+PDFSlideTextExtractor.exe contains the extractor directly. It does not start a
+separate core executable.
 
 Progress is saved while the extractor runs:
 progress.json shows the latest status, current PDF, current slide, and outputs.
