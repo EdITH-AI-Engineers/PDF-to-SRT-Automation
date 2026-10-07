@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "qwen": {
+    "repo_id": "Qwen/Qwen3-8B-GGUF",
+    "revision": "4f02e7c52b572082828edf5058a87e2e7dc3e4d5",
+    "model": {
+      "filename": "Qwen3-8B-Q5_K_M.gguf",
+      "size": 5851112224,
+      "sha256": "068bae163faa96ad48032daf4e071a6a28fe67d8dcc95367609c2ff165e52738"
+    }
+  }
+}

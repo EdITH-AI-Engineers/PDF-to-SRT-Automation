@@ -1,0 +1,4 @@
+-r requirements-common.txt
+
+# llama-cpp-python is installed from the locally compiled CUDA 10.2 wheel by
+# build_portables.ps1. CUDA 10.2 has no compatible official upstream wheel.
