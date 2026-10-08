@@ -37,7 +37,7 @@ def prepare_models(
         use_doc_unwarping=False,
         use_textline_orientation=False,
         device="cpu",
-        enable_mkldnn=True,
+        enable_mkldnn=False,
         cpu_threads=DEFAULT_CPU_THREADS,
         text_recognition_batch_size=DEFAULT_RECOGNITION_BATCH_SIZE,
     )

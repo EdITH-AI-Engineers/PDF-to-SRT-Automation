@@ -1,7 +1,0 @@
---extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu132
-
--r requirements-common.txt
-llama-cpp-python==0.3.35
-nvidia-cublas==13.2.2.2
-nvidia-cuda-nvrtc==13.2.78
-nvidia-cuda-runtime==13.2.86

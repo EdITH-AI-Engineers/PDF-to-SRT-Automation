@@ -1,8 +1,7 @@
 ﻿#!/usr/bin/env python3
 """
-Convert PowerPoint-slide PDFs into one strict UTF-8 .txt file per PDF using
-local PDF text extraction, batched PaddleOCR page recognition, and local Qwen
-formatting.
+Convert PowerPoint-slide PDFs into one UTF-8 .txt file per PDF using local
+PDF text extraction and PaddleOCR only.
 
 Default use:
     python slides_pdf_to_txt.py
@@ -16,13 +15,11 @@ import argparse
 import json
 import re
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from local_qwen import LocalQwenBackend, ensure_model
-from pdf_ingestion import extract_pdf_pages
+from pdf_ingestion import ExtractedPage, extract_pdf_pages
 
 UNREADABLE = "[Unreadable Text]"
 NOT_SPECIFIED = "Not Specified"
@@ -45,171 +42,11 @@ def runtime_base_dir() -> Path:
 BASE_DIR = runtime_base_dir()
 
 
-MODULE_SYSTEM_PROMPT = """You extract metadata from the title slide of a PowerPoint PDF.
-
-Use only the supplied OCR text and visible slide data. Do not use the filename.
-If the module number or module title cannot be confidently identified from the title slide, return "Not Specified".
-Return JSON only:
-{
-  "module_number": "string",
-  "module_title": "string"
-}
-"""
-
-
-SLIDE_SYSTEM_PROMPT = """You convert one OCR page from a PowerPoint-slide PDF into strict JSON for a plain-text extraction file.
-
-Rules you must follow:
-- Treat the supplied OCR page as one slide.
-- Use only visible content supplied in the OCR JSON.
-- Never invent, infer, summarize, or add outside information.
-- Preserve the original order and wording whenever possible.
-- Correct obvious OCR mistakes only when the intended word is clear.
-- Silently omit repeated gibberish or random character sequences caused by broken fonts.
-- If any text cannot be read, write "[Unreadable Text]".
-- Extract slide title, section headings, bullets, numbered lists, tables, labels, figure captions, chart labels, axis labels, legends, definitions, key statistics, and readable footnotes.
-- The equations field contains text produced locally from separate equation snapshots.
-- Do not copy equation OCR into content. The application appends each equation separately and verbatim.
-- Do not extract speaker notes, hidden slides, watermarks, repeated institutional logos, decorative elements, or page numbers unless they are part of slide content.
-- Do not use Markdown tables. Convert tables into plain text rows or label-value lines.
-- This is a text-only OCR pipeline. Never infer what an image, graph, or diagram contains.
-- Always include one description item with label "Image/Diagram Description" and text "Not Specified".
-- Prefer a brief_explanation with 2 or 3 complete sentences in a clear university teaching style.
-- The brief_explanation must be strictly based on the slide content.
-
-Return JSON only:
-{
-  "title": "string",
-  "content": "string",
-  "descriptions": [
-    {
-      "label": "Image/Diagram Description",
-      "text": "string"
-    }
-  ],
-  "brief_explanation": "string"
-}
-"""
-
-
-def to_jsonable(obj: Any) -> Any:
-    if obj is None or isinstance(obj, (str, int, float, bool)):
-        return obj
-    if isinstance(obj, dict):
-        return {str(key): to_jsonable(value) for key, value in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [to_jsonable(value) for value in obj]
-    if hasattr(obj, "model_dump"):
-        return to_jsonable(obj.model_dump())
-    if hasattr(obj, "dict"):
-        return to_jsonable(obj.dict())
-    if hasattr(obj, "__dict__"):
-        return {
-            key: to_jsonable(value)
-            for key, value in vars(obj).items()
-            if not key.startswith("_")
-        }
-    return str(obj)
-
-
-def strip_large_values(obj: Any) -> Any:
-    if isinstance(obj, dict):
-        cleaned: dict[str, Any] = {}
-        for key, value in obj.items():
-            lowered = key.lower()
-            if "base64" in lowered:
-                cleaned[key] = "[image base64 omitted]"
-            else:
-                cleaned[key] = strip_large_values(value)
-        return cleaned
-    if isinstance(obj, list):
-        return [strip_large_values(value) for value in obj]
-    return obj
-
-
-def extract_json_object(text: str) -> dict[str, Any]:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise
-        data = json.loads(cleaned[start : end + 1])
-
-    if not isinstance(data, dict):
-        raise ValueError("Expected a JSON object from local Qwen.")
-    return data
-
-
-def retry(
-    label: str,
-    attempts: int,
-    delay_seconds: float,
-    fn: Any,
-) -> Any:
-    last_error: Exception | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            return fn()
-        except Exception as exc:  # noqa: BLE001 - model/runtime errors vary.
-            last_error = exc
-            if attempt == attempts:
-                break
-
-            wait = delay_seconds * attempt
-
-            print(
-                f"{label} failed on attempt {attempt}; retrying in {wait:.1f}s...",
-                file=sys.stderr,
-            )
-            time.sleep(wait)
-    raise RuntimeError(f"{label} failed after {attempts} attempts: {last_error}") from last_error
-
-
-def chat_json(
-    backend: Any,
-    system_prompt: str,
-    user_prompt: str,
-    max_tokens: int,
-    attempts: int,
-) -> dict[str, Any]:
-    def call() -> dict[str, Any]:
-        response = backend.complete(
-            system_prompt,
-            user_prompt,
-            max_tokens=max_tokens,
-        )
-        return extract_json_object(response)
-
-    return retry("Local Qwen formatting", attempts, 2.0, call)
-
-
-def page_for_prompt(page: Any) -> dict[str, Any]:
-    json_page = to_jsonable(page)
-    if isinstance(json_page, dict):
-        json_page.pop("image_png", None)
-    return strip_large_values(json_page)
-
-
 def clean_field(value: Any) -> str:
     if value is None:
         return NOT_SPECIFIED
     text = str(value).strip()
     return text if text else NOT_SPECIFIED
-
-
-def sentence_count(text: str) -> int:
-    text = text.strip()
-    if not text:
-        return 0
-    sentences = re.findall(r"[^.!?]+[.!?](?:\s+|$)", text)
-    return len(sentences) if sentences else 1
 
 
 def is_markdown_table_separator(line: str) -> bool:
@@ -248,78 +85,55 @@ def markdown_tables_to_plain_text(text: str) -> str:
     return converted if converted else NOT_SPECIFIED
 
 
-def normalize_slide_data(
-    data: dict[str, Any],
-    equations: tuple[str, ...] = (),
-) -> dict[str, Any]:
-    title = clean_field(data.get("title"))
-    content = markdown_tables_to_plain_text(clean_field(data.get("content")))
-    brief_explanation = clean_field(data.get("brief_explanation"))
+def _page_lines(page: ExtractedPage) -> list[str]:
+    return [line.strip() for line in str(page.text or "").splitlines() if line.strip()]
 
+
+def extract_module_metadata(first_page: ExtractedPage) -> tuple[str, str]:
+    """Derive metadata directly from OCR text without generating new content."""
+    lines = _page_lines(first_page)
+    if not lines:
+        return NOT_SPECIFIED, NOT_SPECIFIED
+
+    module_number = NOT_SPECIFIED
+    module_line_index: int | None = None
+    pattern = re.compile(
+        r"\bmodule\s*(?:#|no\.?|number)?\s*[:\-]?\s*([A-Za-z0-9]+(?:[.\-][A-Za-z0-9]+)*)",
+        flags=re.IGNORECASE,
+    )
+    for index, line in enumerate(lines):
+        match = pattern.search(line)
+        if match:
+            module_number = match.group(1)
+            module_line_index = index
+            break
+
+    if module_line_index is not None and module_line_index + 1 < len(lines):
+        module_title = lines[module_line_index + 1]
+    elif module_line_index != 0:
+        module_title = lines[0]
+    else:
+        module_title = NOT_SPECIFIED
+    return module_number, clean_field(module_title)
+
+
+def format_slide(slide_number: int, page: ExtractedPage) -> dict[str, Any]:
+    """Map OCR output to the existing text schema without an LLM."""
+    del slide_number
+    lines = _page_lines(page)
+    if not lines or lines == [UNREADABLE]:
+        title = NOT_SPECIFIED
+        content = UNREADABLE
+    else:
+        title = lines[0]
+        content = "\n".join(lines[1:]).strip() or NOT_SPECIFIED
     return {
-        "title": title,
-        "content": content,
-        "equations": equations,
+        "title": clean_field(title),
+        "content": markdown_tables_to_plain_text(content),
+        "equations": tuple(page.equations or ()),
         "descriptions": [NOT_SPECIFIED_DESCRIPTION.copy()],
-        "brief_explanation": brief_explanation,
+        "brief_explanation": NOT_SPECIFIED,
     }
-
-
-def extract_module_metadata(
-    backend: Any,
-    first_page: Any,
-    attempts: int,
-    max_tokens: int,
-) -> tuple[str, str]:
-    prompt = (
-        "Title slide OCR JSON:\n"
-        f"{json.dumps(page_for_prompt(first_page), ensure_ascii=False, indent=2)}"
-    )
-    data = chat_json(
-        backend=backend,
-        system_prompt=MODULE_SYSTEM_PROMPT,
-        user_prompt=prompt,
-        max_tokens=max_tokens,
-        attempts=attempts,
-    )
-    return clean_field(data.get("module_number")), clean_field(data.get("module_title"))
-
-
-def format_slide(
-    backend: Any,
-    slide_number: int,
-    page: Any,
-    attempts: int,
-    max_tokens: int,
-) -> dict[str, Any]:
-    prompt = (
-        f"Slide number: {slide_number}\n"
-        "OCR page JSON:\n"
-        f"{json.dumps(page_for_prompt(page), ensure_ascii=False, indent=2)}"
-    )
-
-    last_error: Exception | None = None
-    for _ in range(attempts):
-        data = chat_json(
-            backend=backend,
-            system_prompt=SLIDE_SYSTEM_PROMPT,
-            user_prompt=prompt,
-            max_tokens=max_tokens,
-            attempts=attempts,
-        )
-        try:
-            return normalize_slide_data(
-                data,
-                tuple(getattr(page, "equations", ()) or ()),
-            )
-        except ValueError as exc:
-            last_error = exc
-            prompt += (
-                "\n\nYour previous JSON failed validation: "
-                f"{exc}. Return corrected JSON only, using the same OCR data."
-            )
-
-    raise RuntimeError(f"Slide {slide_number} could not be formatted strictly: {last_error}") from last_error
 
 
 def render_document(module_number: str, module_title: str, slides: list[dict[str, Any]]) -> str:
@@ -551,7 +365,6 @@ def cleanup_finished_inputs(input_dir: Path, output_dir: Path, progress: Progres
 
 
 def process_pdf(
-    backend: Any,
     pdf_path: Path,
     output_path: Path,
     args: argparse.Namespace,
@@ -570,27 +383,12 @@ def process_pdf(
             )
         )
 
-        module_number, module_title = extract_module_metadata(
-            backend=backend,
-            first_page=pages[0],
-            attempts=args.attempts,
-            max_tokens=args.metadata_max_tokens,
-        )
+        module_number, module_title = extract_module_metadata(pages[0])
 
         slides: list[dict[str, Any]] = []
         for slide_number, page in enumerate(pages, start=1):
-            if args.request_delay > 0:
-                time.sleep(args.request_delay)
-            print(f"  Formatting slide {slide_number}/{len(pages)}...", file=sys.stderr)
-            slides.append(
-                format_slide(
-                    backend=backend,
-                    slide_number=slide_number,
-                    page=page,
-                    attempts=args.attempts,
-                    max_tokens=args.slide_max_tokens,
-                )
-            )
+            print(f"  Writing slide {slide_number}/{len(pages)}...", file=sys.stderr)
+            slides.append(format_slide(slide_number, page))
 
         output_path.write_text(
             render_document(module_number, module_title, slides),
@@ -613,8 +411,8 @@ def process_pdf(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate one strict UTF-8 .txt file per PowerPoint-slide PDF using "
-            "local extraction, PaddleOCR fallback, and local Qwen."
+            "Generate one UTF-8 .txt file per PowerPoint-slide PDF using "
+            "local extraction and PaddleOCR."
         )
     )
     parser.add_argument(
@@ -633,65 +431,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Folder where .txt files are written. Default: output beside the app.",
     )
     parser.add_argument(
-        "--model-dir",
-        default=str(BASE_DIR / "models"),
-        help="Folder containing the local Qwen GGUF model. Default: models beside the app.",
-    )
-    parser.add_argument(
-        "--n-ctx",
-        type=int,
-        default=8192,
-        help="Qwen context-window size. Default: 8192.",
-    )
-    parser.add_argument(
-        "--n-gpu-layers",
-        type=int,
-        default=-1,
-        help="Qwen layers to offload to the GPU; -1 requests all layers. Default: -1.",
-    )
-    parser.add_argument(
-        "--n-threads",
-        type=int,
-        default=8,
-        help="CPU generation threads, tuned for the Ryzen 7 5800X. Default: 8.",
-    )
-    parser.add_argument(
-        "--n-threads-batch",
-        type=int,
-        default=16,
-        help="CPU prompt-processing threads. Default: 16.",
-    )
-    parser.add_argument(
-        "--n-batch",
-        type=int,
-        default=512,
-        help="Logical prompt batch size for the RTX 3060. Default: 512.",
-    )
-    parser.add_argument(
-        "--n-ubatch",
-        type=int,
-        default=512,
-        help="Physical prompt batch size for the RTX 3060. Default: 512.",
-    )
-    parser.add_argument(
-        "--no-flash-attn",
-        dest="flash_attn",
-        action="store_false",
-        help="Disable CUDA flash attention for troubleshooting.",
-    )
-    parser.add_argument(
-        "--allow-cpu-fallback",
-        dest="require_gpu",
-        action="store_false",
-        help="Allow a CPU-only llama.cpp build instead of requiring CUDA.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Qwen generation seed. Default: 42.",
-    )
-    parser.add_argument(
         "--ocr-min-chars",
         type=int,
         default=40,
@@ -704,30 +443,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Rendering resolution for local PaddleOCR. Default: 200.",
     )
     parser.add_argument(
-        "--attempts",
-        type=int,
-        default=6,
-        help="Retry attempts for local Qwen calls and strict JSON formatting. Default: 6.",
-    )
-    parser.add_argument(
-        "--slide-max-tokens",
-        type=int,
-        default=6000,
-        help="Maximum output tokens for each formatted slide. Default: 6000.",
-    )
-    parser.add_argument(
-        "--metadata-max-tokens",
-        type=int,
-        default=800,
-        help="Maximum output tokens for module metadata. Default: 800.",
-    )
-    parser.add_argument(
-        "--request-delay",
-        type=float,
-        default=0.0,
-        help="Seconds to pause before each slide-formatting request. Default: 0.",
-    )
-    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing .txt files instead of creating numbered filenames.",
@@ -738,32 +453,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_false",
         help="Keep input PDFs after successful extraction. By default, finished PDFs are deleted.",
     )
-    parser.set_defaults(delete_inputs=True, flash_attn=True, require_gpu=True)
+    parser.set_defaults(delete_inputs=True)
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.attempts < 1:
-        raise ValueError("--attempts must be at least 1.")
-    if args.request_delay < 0:
-        raise ValueError("--request-delay must be 0 or greater.")
-    if args.slide_max_tokens < 1000:
-        raise ValueError("--slide-max-tokens must be at least 1000.")
-    if args.metadata_max_tokens < 200:
-        raise ValueError("--metadata-max-tokens must be at least 200.")
-    if args.n_ctx < 2048:
-        raise ValueError("--n-ctx must be at least 2048.")
-    if args.n_gpu_layers < -1:
-        raise ValueError("--n-gpu-layers must be -1 or greater.")
-    if args.n_threads < 1:
-        raise ValueError("--n-threads must be at least 1.")
-    if args.n_threads_batch < 1:
-        raise ValueError("--n-threads-batch must be at least 1.")
-    if args.n_batch < 1:
-        raise ValueError("--n-batch must be at least 1.")
-    if args.n_ubatch < 1 or args.n_ubatch > args.n_batch:
-        raise ValueError("--n-ubatch must be between 1 and --n-batch.")
     if args.ocr_min_chars < 1:
         raise ValueError("--ocr-min-chars must be at least 1.")
     if args.ocr_dpi < 72:
@@ -788,30 +483,13 @@ def main(argv: list[str] | None = None) -> int:
         progress.save()
         return 0
 
-    model_path = ensure_model(Path(args.model_dir).expanduser().resolve())
-    backend = LocalQwenBackend(
-        model_path,
-        n_ctx=args.n_ctx,
-        n_gpu_layers=args.n_gpu_layers,
-        n_threads=args.n_threads,
-        n_threads_batch=args.n_threads_batch,
-        n_batch=args.n_batch,
-        n_ubatch=args.n_ubatch,
-        flash_attn=args.flash_attn,
-        require_gpu=args.require_gpu,
-        temperature=0,
-        seed=args.seed,
-    )
-    try:
-        for batch_output_dir, pdfs in batches:
-            batch_output_dir.mkdir(parents=True, exist_ok=True)
-            for index, pdf_path in enumerate(pdfs, start=1):
-                output_path = unique_output_path(
-                    batch_output_dir, pdf_path, index, args.overwrite
-                )
-                process_pdf(backend, pdf_path, output_path, args, progress)
-    finally:
-        backend.close()
+    for batch_output_dir, pdfs in batches:
+        batch_output_dir.mkdir(parents=True, exist_ok=True)
+        for index, pdf_path in enumerate(pdfs, start=1):
+            output_path = unique_output_path(
+                batch_output_dir, pdf_path, index, args.overwrite
+            )
+            process_pdf(pdf_path, output_path, args, progress)
 
     return 0
 

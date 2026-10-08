@@ -1,1 +1,1 @@
--r requirements-rtx3060.txt
+-r requirements-common.txt
