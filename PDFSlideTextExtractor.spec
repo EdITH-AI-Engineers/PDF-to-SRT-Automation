@@ -98,7 +98,7 @@ if not cuda_binaries:
     )
 
 a = Analysis(
-    ["run_api.py"],
+    ["run_folder_queue.py"],
     pathex=[],
     binaries=llama_binaries + paddle_binaries + cuda_binaries,
     datas=llama_data + paddle_data + paddle_metadata,

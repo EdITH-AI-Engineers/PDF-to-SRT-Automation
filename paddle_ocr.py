@@ -87,6 +87,7 @@ class PaddleOcrBackend:
         *,
         pipeline_factory: Callable[..., Any] | None = None,
     ) -> None:
+        os.environ["FLAGS_enable_pir_api"] = "0"
         model_root = Path(model_root)
         detection_dir = model_root / DETECTION_MODEL
         recognition_dir = model_root / RECOGNITION_MODEL
@@ -115,7 +116,7 @@ class PaddleOcrBackend:
             "use_doc_unwarping": False,
             "use_textline_orientation": False,
             "device": "cpu",
-            "enable_mkldnn": True,
+            "enable_mkldnn": False,
             "cpu_threads": DEFAULT_CPU_THREADS,
             "text_recognition_batch_size": DEFAULT_RECOGNITION_BATCH_SIZE,
         }

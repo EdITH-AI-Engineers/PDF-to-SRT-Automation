@@ -2,8 +2,11 @@ from pathlib import Path
 from io import BytesIO
 import hashlib
 import importlib
+import importlib.util
 import os
+import socket
 import sys
+from threading import Event
 from types import SimpleNamespace
 import zipfile
 
@@ -117,11 +120,46 @@ def test_folder_queue_reports_one_job_state(tmp_path):
     assert queue.job_status("missing") is None
 
 
-def test_pdf_input_api_uses_port_8001():
-    run_api = importlib.import_module("run_api")
+def test_folder_only_runner_watches_directories_without_binding_port(monkeypatch):
+    module_spec = importlib.util.find_spec("run_folder_queue")
+    assert module_spec is not None, "folder-only runner is missing"
+    runner = importlib.import_module("run_folder_queue")
+    events = []
 
-    assert run_api.HOST == "127.0.0.1"
-    assert run_api.PORT == 8001
+    class FakeQueue:
+        running = True
+
+    def reject_socket(*args, **kwargs):
+        raise AssertionError("folder-only runner must not create a network socket")
+
+    monkeypatch.setattr(socket, "socket", reject_socket)
+    monkeypatch.setattr(runner, "ensure_dirs", lambda: events.append("ensure_dirs"))
+    monkeypatch.setattr(
+        runner,
+        "start_folder_queue",
+        lambda: events.append("start_folder_queue") or FakeQueue(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "stop_folder_queue",
+        lambda: events.append("stop_folder_queue"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "close_backend",
+        lambda: events.append("close_backend"),
+    )
+    stop_event = Event()
+    stop_event.set()
+
+    runner.run_folder_service(stop_event)
+
+    assert events == [
+        "ensure_dirs",
+        "start_folder_queue",
+        "stop_folder_queue",
+        "close_backend",
+    ]
 
 
 def test_build_dependencies_do_not_pull_a_second_gpu_runtime():
@@ -689,11 +727,14 @@ def test_local_qwen_rejects_a_cpu_only_runtime(tmp_path, monkeypatch):
         local_qwen.LocalQwenBackend(tmp_path / "model.gguf")
 
 
-def test_paddle_ocr_uses_fast_cpu_models_and_preserves_line_order(tmp_path):
+def test_paddle_ocr_disables_incompatible_onednn_and_preserves_line_order(
+    tmp_path, monkeypatch
+):
     from PIL import Image
 
     paddle_ocr = importlib.import_module("paddle_ocr")
     captured = {}
+    monkeypatch.setenv("FLAGS_enable_pir_api", "1")
 
     class FakePipeline:
         def __init__(self, **kwargs):
@@ -725,10 +766,11 @@ def test_paddle_ocr_uses_fast_cpu_models_and_preserves_line_order(tmp_path):
         "use_doc_unwarping": False,
         "use_textline_orientation": False,
         "device": "cpu",
-        "enable_mkldnn": True,
+        "enable_mkldnn": False,
         "cpu_threads": paddle_ocr.DEFAULT_CPU_THREADS,
         "text_recognition_batch_size": 8,
     }
+    assert os.environ["FLAGS_enable_pir_api"] == "0"
     assert captured["input_shapes"] == [(8, 12, 3), (8, 12, 3)]
 
 
@@ -1336,6 +1378,8 @@ def test_portable_archives_match_their_gpu_profiles(
     archive_name, folder_name, profile_id, cuda_major
 ):
     archive_path = Path(__file__).parents[1] / "dist" / archive_name
+    if not archive_path.is_file():
+        pytest.skip(f"portable archive has not been built: {archive_name}")
     root = folder_name.casefold()
 
     with zipfile.ZipFile(archive_path) as archive:

@@ -1,8 +1,9 @@
 # PDF Slide Text Extractor
 
-The extractor can accept PDFs over its local HTTP API on port `8001` or read
-them directly from the `input` folder. Extraction, PaddleOCR, and Qwen
-formatting all run locally. Two portable GPU builds are available:
+The extractor reads PDFs from the `input` folder and writes text files to the
+`output` folder. It does not start an HTTP server or open a network port.
+Extraction, PaddleOCR, and Qwen formatting all run locally. Two portable GPU
+builds are available:
 
 | Build | CUDA runtime | Qwen execution |
 | --- | --- | --- |
@@ -36,8 +37,7 @@ needed. An NVIDIA display driver is still required. Use the
 GTX 1050 Ti build for its bundled CUDA 10.2 runtime built for the Pascal
 architecture. The RTX 3060 build requires a driver compatible with CUDA 13.2.
 The app reports an actionable error rather than silently reverting to CPU when
-CUDA is unavailable. `GET /health` reports the selected profile, target GPU,
-CUDA runtime, and GPU-layer setting.
+CUDA is unavailable.
 
 ## Building both portable packages
 
@@ -54,9 +54,9 @@ resulting folders and ZIP archives are written to `dist`.
 
 ## Automatic folder queue
 
-While the API is running, it continuously watches `input` and processes one
-folder at a time. You can keep copying module folders into `input`; output keeps
-the same relative folder structure:
+While the folder watcher is running, it continuously watches `input` and
+processes one folder at a time. You can keep copying module folders into
+`input`; output keeps the same relative folder structure:
 
 ```text
 input\CS101\Module 1\slides.pdf  ->  output\CS101\Module 1\slides.txt
@@ -66,57 +66,26 @@ input\CS101\Module 2\slides.pdf  ->  output\CS101\Module 2\slides.txt
 A folder is queued after its PDF filenames, sizes, and modification times have
 remained unchanged for five seconds. This prevents partially copied PDFs from
 being opened. Successfully processed input PDFs are deleted. A failed PDF stays
-in `input` and is not retried repeatedly until it changes or `POST /queue/retry`
-is called.
+in `input` and is not retried repeatedly until it changes or the watcher is
+restarted.
 
-## PDF input API
+## Running the folder watcher
 
-Install the dependencies and start the API:
+Install the dependencies and start the watcher:
 
 ```powershell
 python -m pip install -r requirements.txt
-python .\run_api.py
+python .\run_folder_queue.py
 ```
 
-The upload page and API are available at <http://127.0.0.1:8001>. Upload one or
-more PDF files as multipart field `files`:
-
-```powershell
-curl.exe -F "files=@C:\path\module.pdf" http://127.0.0.1:8001/process
-```
-
-To return immediately and let the background queue process the PDFs, use the
-queued upload endpoint. `folder_name` is optional:
-
-```powershell
-curl.exe -F "folder_name=Module 7" -F "files=@C:\path\part-1.pdf" -F "files=@C:\path\part-2.pdf" http://127.0.0.1:8001/queue/upload
-```
-
-The response includes a `job_id` and `status_url`. Open that URL to see whether
-the folder is queued, processing, completed, or failed.
-
-An optional `course_code` form field stores inputs under
-`input\<course_code>` and results under `output\<course_code>`. You may also use
-`POST /process/<course_code>`.
-
-Other endpoints:
+For a portable build, extract the package and run
+`PDFSlideTextExtractor.exe`. Leave the program open while copying PDFs or
+module folders into `input`. Results appear under the matching path in
+`output`:
 
 ```text
-GET  /health
-GET  /queue
-GET  /queue/{job_id}
-POST /queue/upload
-POST /queue/retry
-POST /process-existing
-GET  /outputs
-GET  /download/{filename}
+input\module.pdf                    -> output\module.txt
+input\CS101\Module 1\slides.pdf    -> output\CS101\Module 1\slides.txt
 ```
 
-## One-time folder input
-
-The API queue is recommended. For a single command-line batch instead, put PDFs
-in `input`, then run:
-
-```powershell
-python .\slides_pdf_to_txt.py
-```
+Press `Ctrl+C` to stop the watcher cleanly. No browser, API, or port is used.
