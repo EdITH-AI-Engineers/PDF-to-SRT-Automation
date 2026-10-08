@@ -132,7 +132,6 @@ def format_slide(slide_number: int, page: ExtractedPage) -> dict[str, Any]:
         "content": markdown_tables_to_plain_text(content),
         "equations": tuple(page.equations or ()),
         "descriptions": [NOT_SPECIFIED_DESCRIPTION.copy()],
-        "brief_explanation": NOT_SPECIFIED,
     }
 
 
@@ -184,9 +183,6 @@ def render_document(module_number: str, module_title: str, slides: list[dict[str
         lines.extend(
             [
                 "}",
-                "",
-                "Brief Explanation:",
-                slide["brief_explanation"],
                 "",
                 "---",
                 "",

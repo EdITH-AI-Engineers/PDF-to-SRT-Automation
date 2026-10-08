@@ -154,11 +154,10 @@ def test_ocr_text_is_formatted_deterministically_without_generation():
         "descriptions": [
             {"label": "Image/Diagram Description", "text": "Not Specified"}
         ],
-        "brief_explanation": "Not Specified",
     }
     rendered = slides_pdf_to_txt.render_document("4", "Operating Systems", [slide])
     assert "Equation 1: t = 4 s" in rendered
-    assert "Brief Explanation:\nNot Specified" in rendered
+    assert "Brief Explanation:" not in rendered
 
 
 def test_paddle_ocr_disables_incompatible_onednn_and_preserves_line_order(
@@ -169,7 +168,7 @@ def test_paddle_ocr_disables_incompatible_onednn_and_preserves_line_order(
 
     class Result:
         def __init__(self, lines):
-            self.json = {"res": {"rec_texts": lines}}
+            self.json = {"res": {"rec_texts": lines, "rec_scores": [0.99] * len(lines)}}
 
     class FakePipeline:
         def __init__(self, **kwargs):
@@ -189,8 +188,46 @@ def test_paddle_ocr_disables_incompatible_onednn_and_preserves_line_order(
     assert captured["device"] == "cpu"
     assert captured["enable_mkldnn"] is False
     assert captured["text_recognition_batch_size"] == 8
-    assert captured["text_detection_model_name"] == "PP-OCRv5_mobile_det"
-    assert captured["text_recognition_model_name"] == "en_PP-OCRv5_mobile_rec"
+    assert captured["text_detection_model_name"] == "PP-OCRv6_small_det"
+    assert captured["text_recognition_model_name"] == "PP-OCRv6_small_rec"
+
+
+def test_paddle_ocr_retries_only_low_confidence_pages_with_medium(tmp_path):
+    paddle_ocr = importlib.import_module("paddle_ocr")
+    calls = []
+
+    class Result:
+        def __init__(self, text, score):
+            self.json = {"res": {"rec_texts": [text], "rec_scores": [score]}}
+
+    class FakePipeline:
+        def __init__(self, **kwargs):
+            self.model = kwargs["text_recognition_model_name"]
+            calls.append(("create", self.model))
+
+        def predict(self, inputs):
+            calls.append(("predict", self.model, len(inputs)))
+            if self.model == paddle_ocr.SMALL_RECOGNITION_MODEL:
+                return [Result("Clear title", 0.97), Result("uncertain", 0.51)]
+            return [Result("Corrected medium text", 0.94)]
+
+    backend = paddle_ocr.PaddleOcrBackend(tmp_path, pipeline_factory=FakePipeline)
+    from PIL import Image
+
+    stream = BytesIO()
+    Image.new("RGB", (8, 8), "white").save(stream, format="PNG")
+    image = stream.getvalue()
+
+    assert backend.recognize_many([image, image]) == [
+        "Clear title",
+        "Corrected medium text",
+    ]
+    assert calls == [
+        ("create", paddle_ocr.SMALL_RECOGNITION_MODEL),
+        ("predict", paddle_ocr.SMALL_RECOGNITION_MODEL, 2),
+        ("create", paddle_ocr.MEDIUM_RECOGNITION_MODEL),
+        ("predict", paddle_ocr.MEDIUM_RECOGNITION_MODEL, 1),
+    ]
 
 
 def test_local_pdf_extraction_uses_text_then_paddle_fallback(tmp_path):
@@ -298,10 +335,10 @@ def test_gibberish_lines_are_dropped_but_equations_are_kept():
 def test_paddle_ocr_uses_and_verifies_bundled_models(tmp_path, monkeypatch):
     paddle_ocr = importlib.import_module("paddle_ocr")
     model_root = tmp_path / "paddleocr"
-    detection_dir = model_root / paddle_ocr.DETECTION_MODEL
-    recognition_dir = model_root / paddle_ocr.RECOGNITION_MODEL
-    detection_dir.mkdir(parents=True)
-    recognition_dir.mkdir()
+    for model_name in paddle_ocr.MODEL_NAMES:
+        (model_root / model_name).mkdir(parents=True)
+    detection_dir = model_root / paddle_ocr.SMALL_DETECTION_MODEL
+    recognition_dir = model_root / paddle_ocr.SMALL_RECOGNITION_MODEL
     captured = {}
 
     class FakePipeline:
@@ -327,7 +364,7 @@ def test_prepare_paddle_models_replaces_and_reuses_complete_bundle(tmp_path):
     stale_model.mkdir(parents=True)
     (stale_model / "partial.bin").write_bytes(b"partial")
     cache_root = tmp_path / "cache"
-    for model_name in (paddle_ocr.DETECTION_MODEL, paddle_ocr.RECOGNITION_MODEL):
+    for model_name in paddle_ocr.MODEL_NAMES:
         model_dir = cache_root / model_name
         model_dir.mkdir(parents=True)
         (model_dir / "inference.bin").write_bytes(model_name.encode())
@@ -347,7 +384,7 @@ def test_prepare_paddle_models_replaces_and_reuses_complete_bundle(tmp_path):
         pipeline_factory=lambda **kwargs: pytest.fail("complete bundle rebuilt"),
     )
 
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert not (destination / paddle_ocr.DETECTION_MODEL / "partial.bin").exists()
     assert paddle_ocr.model_bundle_is_complete(destination)
 
@@ -373,7 +410,7 @@ def test_process_pdf_writes_only_ocr_derived_content(tmp_path, monkeypatch):
     assert "Module #: 4" in text
     assert "Module Title: Operating Systems" in text
     assert "A process is a running program." in text
-    assert "Brief Explanation:\nNot Specified" in text
+    assert "Brief Explanation:" not in text
     assert source.is_file()
 
 

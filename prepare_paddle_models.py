@@ -7,8 +7,8 @@ import shutil
 from paddle_ocr import (
     DEFAULT_CPU_THREADS,
     DEFAULT_RECOGNITION_BATCH_SIZE,
-    DETECTION_MODEL,
-    RECOGNITION_MODEL,
+    MODEL_NAMES,
+    MODEL_PAIRS,
     model_bundle_is_complete,
     write_model_bundle_manifest,
 )
@@ -21,7 +21,7 @@ def prepare_models(
     pipeline_factory=None,
 ) -> None:
     destination = Path(destination).resolve()
-    required_models = (DETECTION_MODEL, RECOGNITION_MODEL)
+    required_models = MODEL_NAMES
     if model_bundle_is_complete(destination):
         return
 
@@ -30,17 +30,18 @@ def prepare_models(
 
         pipeline_factory = PaddleOCR
 
-    pipeline_factory(
-        text_detection_model_name=DETECTION_MODEL,
-        text_recognition_model_name=RECOGNITION_MODEL,
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=False,
-        device="cpu",
-        enable_mkldnn=False,
-        cpu_threads=DEFAULT_CPU_THREADS,
-        text_recognition_batch_size=DEFAULT_RECOGNITION_BATCH_SIZE,
-    )
+    for detection_model, recognition_model in MODEL_PAIRS:
+        pipeline_factory(
+            text_detection_model_name=detection_model,
+            text_recognition_model_name=recognition_model,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            device="cpu",
+            enable_mkldnn=False,
+            cpu_threads=DEFAULT_CPU_THREADS,
+            text_recognition_batch_size=DEFAULT_RECOGNITION_BATCH_SIZE,
+        )
 
     cache_root = (
         Path(cache_root).resolve()

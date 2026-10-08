@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from io import BytesIO
 import json
 import os
@@ -10,16 +12,33 @@ from threading import Lock
 from typing import Any, Callable, Iterable
 
 
-DETECTION_MODEL = "PP-OCRv5_mobile_det"
-RECOGNITION_MODEL = "en_PP-OCRv5_mobile_rec"
+SMALL_DETECTION_MODEL = "PP-OCRv6_small_det"
+SMALL_RECOGNITION_MODEL = "PP-OCRv6_small_rec"
+MEDIUM_DETECTION_MODEL = "PP-OCRv6_medium_det"
+MEDIUM_RECOGNITION_MODEL = "PP-OCRv6_medium_rec"
+DETECTION_MODEL = SMALL_DETECTION_MODEL
+RECOGNITION_MODEL = SMALL_RECOGNITION_MODEL
+MODEL_PAIRS = (
+    (SMALL_DETECTION_MODEL, SMALL_RECOGNITION_MODEL),
+    (MEDIUM_DETECTION_MODEL, MEDIUM_RECOGNITION_MODEL),
+)
+MODEL_NAMES = tuple(model_name for pair in MODEL_PAIRS for model_name in pair)
 MODEL_MANIFEST = "model-manifest.json"
 DEFAULT_CPU_THREADS = min(8, max(1, (os.cpu_count() or 1) // 2))
 DEFAULT_RECOGNITION_BATCH_SIZE = 8
+DEFAULT_PREPROCESS_WORKERS = min(4, max(1, (os.cpu_count() or 1) // 4))
+DEFAULT_MEDIUM_FALLBACK_CONFIDENCE = 0.82
+
+
+@dataclass(frozen=True)
+class RecognizedText:
+    text: str
+    confidence: float
 
 
 def _model_snapshot(model_root: Path) -> dict[str, list[dict[str, object]]]:
     snapshot: dict[str, list[dict[str, object]]] = {}
-    for model_name in (DETECTION_MODEL, RECOGNITION_MODEL):
+    for model_name in MODEL_NAMES:
         model_dir = Path(model_root) / model_name
         files = []
         if model_dir.is_dir():
@@ -63,7 +82,7 @@ def model_bundle_is_complete(model_root: Path) -> bool:
     return all(actual.values()) and actual == expected
 
 
-def _recognized_lines(result: Any) -> tuple[str, ...]:
+def _recognized_text(result: Any) -> RecognizedText:
     payload = getattr(result, "json", result)
     if callable(payload):
         payload = payload()
@@ -72,10 +91,45 @@ def _recognized_lines(result: Any) -> tuple[str, ...]:
     if not isinstance(payload, dict):
         raise RuntimeError("PaddleOCR returned an unexpected result")
 
-    values = payload.get("res", payload).get("rec_texts", ())
+    result_payload = payload.get("res", payload)
+    values = result_payload.get("rec_texts", ())
     if not isinstance(values, (list, tuple)):
         raise RuntimeError("PaddleOCR result did not contain recognized text")
-    return tuple(text for value in values if (text := str(value).strip()))
+
+    score_values = result_payload.get("rec_scores", ())
+    if not isinstance(score_values, (list, tuple)):
+        score_values = ()
+
+    lines: list[str] = []
+    weighted_scores: list[tuple[float, int]] = []
+    for index, value in enumerate(values):
+        text = str(value).strip()
+        if not text:
+            continue
+        lines.append(text)
+        if index < len(score_values):
+            try:
+                score = min(1.0, max(0.0, float(score_values[index])))
+            except (TypeError, ValueError):
+                continue
+            weight = max(1, sum(character.isalnum() for character in text))
+            weighted_scores.append((score, weight))
+
+    if weighted_scores:
+        total_weight = sum(weight for _, weight in weighted_scores)
+        confidence = sum(score * weight for score, weight in weighted_scores) / total_weight
+    else:
+        confidence = 1.0 if lines else 0.0
+    return RecognizedText("\n".join(lines), confidence)
+
+
+def _decode_image(value: bytes) -> Any:
+    from PIL import Image
+    import numpy as np
+
+    with Image.open(BytesIO(value)) as image:
+        rgb = np.asarray(image.convert("RGB"))
+        return np.ascontiguousarray(rgb[:, :, ::-1])
 
 
 class PaddleOcrBackend:
@@ -86,12 +140,11 @@ class PaddleOcrBackend:
         model_root: Path,
         *,
         pipeline_factory: Callable[..., Any] | None = None,
+        fallback_confidence: float = DEFAULT_MEDIUM_FALLBACK_CONFIDENCE,
     ) -> None:
         os.environ["FLAGS_enable_pir_api"] = "0"
         model_root = Path(model_root)
-        detection_dir = model_root / DETECTION_MODEL
-        recognition_dir = model_root / RECOGNITION_MODEL
-        local_models = (detection_dir.is_dir(), recognition_dir.is_dir())
+        local_models = tuple((model_root / name).is_dir() for name in MODEL_NAMES)
         if any(local_models) and not all(local_models):
             raise RuntimeError(f"Incomplete bundled PaddleOCR models in {model_root}")
         if getattr(sys, "frozen", False) and not model_bundle_is_complete(model_root):
@@ -109,9 +162,24 @@ class PaddleOcrBackend:
                 ) from exc
             pipeline_factory = PaddleOCR
 
+        if not 0.0 <= fallback_confidence <= 1.0:
+            raise ValueError("fallback_confidence must be between 0 and 1")
+
+        self._model_root = model_root
+        self._local_models = all(local_models)
+        self._pipeline_factory = pipeline_factory
+        self._fallback_confidence = fallback_confidence
+        self._medium_pipeline: Any | None = None
+        self._small_pipeline = self._create_pipeline(
+            SMALL_DETECTION_MODEL,
+            SMALL_RECOGNITION_MODEL,
+        )
+        self._lock = Lock()
+
+    def _create_pipeline(self, detection_model: str, recognition_model: str) -> Any:
         pipeline_options: dict[str, Any] = {
-            "text_detection_model_name": DETECTION_MODEL,
-            "text_recognition_model_name": RECOGNITION_MODEL,
+            "text_detection_model_name": detection_model,
+            "text_recognition_model_name": recognition_model,
             "use_doc_orientation_classify": False,
             "use_doc_unwarping": False,
             "use_textline_orientation": False,
@@ -120,31 +188,62 @@ class PaddleOcrBackend:
             "cpu_threads": DEFAULT_CPU_THREADS,
             "text_recognition_batch_size": DEFAULT_RECOGNITION_BATCH_SIZE,
         }
-        if all(local_models):
+        if self._local_models:
             pipeline_options.update(
-                text_detection_model_dir=str(detection_dir),
-                text_recognition_model_dir=str(recognition_dir),
+                text_detection_model_dir=str(self._model_root / detection_model),
+                text_recognition_model_dir=str(self._model_root / recognition_model),
             )
+        return self._pipeline_factory(**pipeline_options)
 
-        self._pipeline = pipeline_factory(**pipeline_options)
-        self._lock = Lock()
+    def _get_medium_pipeline(self) -> Any:
+        if self._medium_pipeline is None:
+            self._medium_pipeline = self._create_pipeline(
+                MEDIUM_DETECTION_MODEL,
+                MEDIUM_RECOGNITION_MODEL,
+            )
+        return self._medium_pipeline
 
-    def recognize_many(self, image_bytes: Iterable[bytes]) -> list[str]:
-        from PIL import Image
-        import numpy as np
-
-        inputs = []
-        for value in image_bytes:
-            with Image.open(BytesIO(value)) as image:
-                rgb = np.asarray(image.convert("RGB"))
-                inputs.append(np.ascontiguousarray(rgb[:, :, ::-1]))
-        if not inputs:
-            return []
-
-        with self._lock:
-            results = list(self._pipeline.predict(inputs))
+    @staticmethod
+    def _predict(pipeline: Any, inputs: list[Any]) -> list[RecognizedText]:
+        results = list(pipeline.predict(inputs))
         if len(results) != len(inputs):
             raise RuntimeError(
                 f"PaddleOCR returned {len(results)} results for {len(inputs)} images"
             )
-        return ["\n".join(_recognized_lines(result)) for result in results]
+        return [_recognized_text(result) for result in results]
+
+    def recognize_many(self, image_bytes: Iterable[bytes]) -> list[str]:
+        encoded_images = list(image_bytes)
+        if not encoded_images:
+            return []
+
+        workers = min(DEFAULT_PREPROCESS_WORKERS, len(encoded_images))
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                inputs = list(executor.map(_decode_image, encoded_images))
+        else:
+            inputs = [_decode_image(encoded_images[0])]
+
+        with self._lock:
+            recognized = self._predict(self._small_pipeline, inputs)
+            fallback_indexes = [
+                index
+                for index, result in enumerate(recognized)
+                if not result.text or result.confidence < self._fallback_confidence
+            ]
+            if fallback_indexes:
+                fallback_inputs = [inputs[index] for index in fallback_indexes]
+                medium_results = self._predict(
+                    self._get_medium_pipeline(),
+                    fallback_inputs,
+                )
+                for index, medium_result in zip(
+                    fallback_indexes, medium_results, strict=True
+                ):
+                    small_result = recognized[index]
+                    if medium_result.text and (
+                        not small_result.text
+                        or medium_result.confidence >= small_result.confidence
+                    ):
+                        recognized[index] = medium_result
+        return [result.text for result in recognized]

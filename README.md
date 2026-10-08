@@ -4,12 +4,12 @@ The extractor watches the `input` folder, reads slide PDFs locally, and writes
 UTF-8 text files to the matching path under `output`. It does not use an LLM,
 download a Qwen/GGUF model, start an HTTP server, or open a network port.
 
-PyMuPDF is used first for reliable embedded PDF text. PaddleOCR handles scanned
-pages and pages whose embedded text is missing or corrupt. The output is
+PyMuPDF is used first for reliable embedded PDF text. PP-OCRv6-small handles
+scanned pages, and PP-OCRv6-medium retries only empty or low-confidence OCR
+results. The output is
 deterministic: the first readable line becomes the slide title, the remaining
 recognized lines become the content, locally detected equations are listed
-separately, and fields that would require interpretation are written as
-`Not Specified`.
+separately, and the output contains no generated brief-explanation section.
 
 ## Automatic folder queue
 
@@ -36,15 +36,32 @@ Press `Ctrl+C` to stop cleanly.
 
 ## OCR behavior
 
-The bundled default is the English PP-OCRv5 mobile detector and recognizer at
-200 DPI. OCR runs on the CPU for broad Windows compatibility. Pages are handled
-in bounded batches of eight, and recognized lines are reused for local equation
+The bundled default is PP-OCRv6-small at 200 DPI. PP-OCRv6-medium is loaded
+lazily and receives only pages whose small-model result is empty or below the
+0.82 confidence threshold. If both models return text, the higher-confidence
+result is kept.
+
+OCR is deliberately CPU-only: no CUDA, GPU runtime, oneDNN, server, or open
+port is required. Pages are handled in bounded batches of eight. Image decoding
+and color conversion run in parallel across up to four workers, while PaddleOCR
+uses up to eight CPU threads. Recognized lines are reused for local equation
 detection.
 
-For faster conversion, the next optimization is to skip rasterization and OCR
-when a page already has trustworthy embedded text. For higher recognition
-accuracy, use a larger PaddleOCR model or a document-structure pipeline; these
-increase package size and resource usage.
+## Deployment systems
+
+There are two current target systems:
+
+1. **GTX 1050 Ti 4 GB system:** Windows 11 Pro 64-bit, Intel Core i7-10700,
+   and 16 GB RAM. OCR runs on the CPU because the GPU's Pascal compute
+   capability 6.1 is below the greater-than-7.5 requirement of the current
+   PaddlePaddle Windows GPU package.
+2. **RTX 3060 Ti 12 GB system:** intended for a separate GPU-enabled package.
+   Do not replace the CPU package with GPU-only dependencies; both system
+   variants must remain usable.
+
+The current portable is the CPU-compatible variant and therefore works on both
+systems without CUDA. A future GPU package may accelerate the RTX system while
+retaining automatic CPU fallback.
 
 ## Building the portable package
 
